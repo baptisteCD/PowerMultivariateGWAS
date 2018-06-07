@@ -1,0 +1,434 @@
+---
+title: "Statistical power of multivariate GWAS"
+author: "by [Baptiste Couvy-Duchesne] - `r format(Sys.time(), '%d %B %Y')`"
+output:
+  epuRate::PCTG:
+    toc: TRUE
+    code_folding: "show"
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# You need these libraries to run this template:
+library(rmarkdown)    # install.packages("rmarkdown") 
+library(epuRate)      # devtools::install_github("holtzy/epuRate", force=TRUE)
+
+# Multivariate power requires
+library(MBESS)
+library(Matrix)
+library(matrixcalc)
+library(mvtnorm)
+library(SCGLR)
+```
+
+<br><br><br><br>
+
+> Code associated with the manuscript "A fast method for estimating statistical power of multivariate GWAS in real case scenarios: examples from the field of imaging genetics"  
+
+# Functions used to calculate power 
+
+## Univariate power
+
+```{r, message=FALSE}
+
+calculateUnivPowerAnalytic<-function(R2, MAF, alpha, Ns){
+
+  # Initialise  
+pwF<-0
+wF<-0
+FF<-0
+
+for (N in Ns){
+
+sdY<-1 # Variance phenotype assumed to be 1
+r<-1 
+a<-1
+b<-1
+C<-diag(1, nrow = a, ncol=r)
+
+# Critical value from an inverse central distribution F:
+Fcrit<-qf(1-alpha, a, N-r)
+FF<-c(FF, Fcrit)
+# Non centrality parameter
+w<-Rsquare2Lambda(R2 = R2, N = N)
+wF<-c(wF, w)
+# Power
+pw<-1-pf(Fcrit, a, N-r, w)
+pwF<-c(pwF, pw)
+
+}
+return(pwF)
+}
+
+
+```
+
+## Calculate Sigma
+
+```{r, message=FALSE}
+
+calculateSigma<-function(R2, aPaths,MAF, ePaths, factorNb, nvar){
+
+AA=aPaths %*% t(aPaths) # CovA
+EE=ePaths %*% t(ePaths) # CovE
+RR=AA+EE # CovP
+
+# Effect of latent trait on phenotypes
+betaA2<-sqrt(R2)/max(abs(aPaths[,factorNb]))* sign(aPaths[,factorNb][which( abs(aPaths[,factorNb]) == max(abs(aPaths[,factorNb]))) ] )
+betaVect<-betaA2 * aPaths[,factorNb]
+
+# Variance and covariance due to the effect removed from A
+AA2= AA - betaVect %*% t(betaVect)
+
+# Residual variance-covariance matrix
+RR2= AA2 + EE 
+return(RR2)
+}
+
+```
+
+# MANOVA power calculation 
+
+```{r, message=FALSE}
+estimatePowerMultivariateConservative<-function(R2, MAF, aPaths, ePaths, nvar, Ns, alpha, method){
+
+   start_time=Sys.time()
+pwPBfinal<-NULL
+pwWfinal<-NULL
+pwHLTfinal<-NULL
+r<-1
+a<-1
+b<-nvar
+s<-min(a,b)
+C<-diag(1, nrow = a, ncol=r)
+sdY<-1
+
+for (factorNb in 1:nvar){
+  
+sigma<-calculateSigma(R2 = R2,MAF=MAF, aPaths= aPaths, ePaths=ePaths, factorNb = factorNb, nvar = nvar)
+
+pwPBf<-NULL
+pwWf<-NULL
+pwHLTf<-NULL
+sdSNP<-1
+
+for (N in Ns){
+
+# Fcrit and df of residuals
+df2PB<-s*(N-r-b+s)
+FcritPB<-qf(1-alpha, df1=a*b, df2=df2PB)
+
+g<-sqrt(((a**2)*(b**2)-4)/(a**2 + b**2-5))
+df2W<-g*((N-r) - (b-a+1)/2) - (a*b-2)/2
+FcritW<-qf(1-alpha, df1=a*b, df2=df2W)
+
+df2HLT<-s*((N-r) -b -1 )+2
+FcritHLT<-qf(1-alpha, df1=a*b, df2=df2HLT)
+
+SNP <-rbinom(N, 2, MAF)
+SNP= (SNP - mean(SNP)) / sd(SNP)
+SNP<-matrix(SNP, nrow=N, ncol=1)
+
+Cmat<-matrix(sdSNP**2, nrow=1, ncol=1)
+Umat<-diag(1, nrow=nvar, ncol=nvar)
+
+betaA<-sqrt(R2)*sdY/sdSNP/max(abs(aPaths[,factorNb])) * sign(aPaths[,factorNb][which( abs(aPaths[,factorNb]) == max(abs(aPaths[,factorNb]))) ] )
+betaVect<-matrix(betaA * aPaths[,factorNb], nrow=1, ncol=nvar)
+
+thetaH1<- Cmat %*% betaVect %*% Umat
+
+Hmat<-t(thetaH1) %*% solve(Cmat %*% solve(t(SNP) %*% SNP) %*% t(Cmat)) %*% thetaH1
+Emat<- (t(Umat) %*% sigma %*% Umat) * (N-r)
+Tmat<-Hmat + Emat
+
+# Trace Pillai-Bartlett
+PBstat<- matrix.trace(Hmat %*% solve(Tmat))
+ncpPB<-(PBstat/s)/((1-PBstat/s)/df2PB)
+pwPB<-1-pf(FcritPB, a*b, df2PB, ncpPB)
+pwPBf<-cbind(pwPBf, pwPB)
+
+# Wilks' lambda
+Wstat<-det(Emat %*% solve(Tmat))
+ncpW<-(1-Wstat**(1/g))/(Wstat**(1/g) / df2W)
+pwW<-1-pf(FcritW, a*b, df2W, ncpW)
+pwWf<-cbind(pwWf, pwW)
+
+# Hotelling-Lawley trace
+HLTstat<-matrix.trace(Hmat %*% solve(Emat))
+ncpHLT<-(HLTstat/s)/(1/df2HLT)
+pwHLT<-1-pf(FcritHLT, a*b, df2HLT, ncpHLT)
+pwHLTf<-cbind(pwHLTf, pwHLT)
+
+}
+
+pwPBfinal<-rbind(pwPBfinal, pwPBf)
+pwWfinal<-rbind(pwWfinal, pwWf)
+pwHLTfinal<-rbind(pwHLTfinal, pwHLTf)
+
+}
+result<-rbind(c(0,colMeans(pwPBfinal, na.rm = T)), c(0,colMeans(pwWfinal, na.rm = T)), c(0,colMeans(pwHLTfinal, na.rm = T)))
+
+# Get A estimates to weight power by factors
+# apaths are standardised, so A and E are pretty straighforward to calculate
+wA<-colSums(aPaths * aPaths)
+#print(wA)
+
+# Print the number of genetic factors that cannot handle a specific effect size (they explain less than R2 on any of the variables)
+print(paste(length(which(is.na(pwPBfinal[,1]))), "Factors were excluded for R2=", R2 ))
+
+# Exclude these factors
+if (length(which(is.na(pwPBfinal[,1])))>0){
+wA<-wA[-which(is.na(pwPBfinal[,1]))]
+pwPBfinal<-pwPBfinal[-which(is.na(pwPBfinal[,1])),]
+pwWfinal<-pwWfinal[-which(is.na(pwWfinal[,1])),]
+pwHLTfinal<-pwHLTfinal[-which(is.na(pwHLTfinal[,1])),]
+}
+wA<-wA/sum(wA)
+resultWA<-rbind(c(0,wA %*% pwPBfinal), c(0, wA %*% pwWfinal), c(0,wA %*% pwHLTfinal))
+
+rownames(resultWA)<-c("PB", "W", "HLT")
+colnames(resultWA)<-c(0,Ns)
+
+ end_time=Sys.time()
+ print(paste0("Total time spent computing power: ", end_time - start_time))
+ 
+ if (method=="factorWise"){ return(signif(pwPBfinal, 3) ) }
+  if (method=="weights"){ return(signif(resultWA, 3) ) }
+ if (method=="noweights"){return(signif(rbind(c(0,colMeans(pwPBfinal)), c(0,colMeans(pwWfinal)), c(0,colMeans(pwHLTfinal)) ),3))}
+
+}
+
+```
+
+
+# Simulate power 
+
+```{r, message=FALSE}
+
+ powerSimulatedMANOVA=function(Ns, MAF, aPaths, ePaths, nvar, R2, alpha){   
+  
+  empPwrAllN=NULL
+  sdY<-1
+  start_time=Sys.time()
+
+  for (N in Ns){
+  empPwr=NULL
+  print(paste0("N= ", N ) )
+   
+  for (factorNb in 1:nvar){
+    
+    print(paste0("Factor: " , factorNb))
+    pall=NULL
+    
+for (simul in 1:100){  
+  # Simulate SNP  
+SNP <-rbinom(N, 2, MAF)
+SNP<-matrix(SNP, nrow=N, ncol=1)
+sdSNP<-sqrt(2*MAF*(1-MAF))
+
+# Vector of betas and corresponding A and E
+betaA<-sqrt(R2)*sdY/sdSNP/max(abs(aPaths[,factorNb]))*sign(aPaths[,factorNb][which( abs(aPaths[,factorNb]) == max(abs(aPaths[,factorNb]))) ] )
+betaVect<-matrix(betaA * aPaths[,factorNb], nrow=1, ncol=nvar)
+Ax<-betaA*SNP + rnorm(n=N, mean=0, sd=sqrt(1-R2)  ) 
+
+A<-rmvnorm(n=N, mean=rep(0,nvar) , sigma=diag(1, nvar, nvar))
+E<-rmvnorm(n=N, mean=rep(0,nvar) , sigma=diag(1, nvar, nvar))
+A[,factorNb]=Ax
+
+# Phenotypes
+P<- A %*% t(aPaths) + E %*% t(ePaths)
+
+# Perform test
+m0=manova(P ~ SNP )
+pv=summary(m0, test="Pillai")$stats[1,6]
+pall=c(pall, pv)
+
+}
+  empPwr=rbind(empPwr,length(which(pall<alpha)) / length(pall) )
+   }
+    empPwrAllN=cbind(empPwrAllN, empPwr)
+  }
+  
+end_time=Sys.time()
+print(paste0("Total time spend computing power: ", end_time - start_time, " seconds"))   
+return(empPwrAllN)
+  
+}
+```
+
+## Wrap up functions to compute all the power curves
+
+```{r, message=FALSE}
+
+# Analytical power
+calculateAndPlotPower<-function(aPathsFile, ePathsFile, codeName, nvarIndep, nvar, alpha, method){
+
+aPaths<-read.csv(aPathsFile)
+aPaths$X<-NULL
+aPaths<-as.matrix(aPaths)
+ePaths<-read.csv(ePathsFile)
+ePaths$X<-NULL
+ePaths<-as.matrix(ePaths)
+
+MAF<-0.02
+alpha<-5e-8
+
+Ns<-c(1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,15000,20000,25000,30000,35000,40000,45000,50000,55000, 60000)
+R2s<-c(0.01,0.0075,0.005,0.0025,0.001,0.00075,0.0005)
+for (R2 in R2s){
+write.csv(estimatePowerMultivariateConservative(R2 = R2, MAF = MAF, aPaths = aPaths, ePaths = ePaths, nvar = nvar, Ns = Ns, alpha = alpha, method=method), file = paste0("ACE_may2018/PowerAnalytic_multiv_" , codeName,"_", R2, "_", method, ".csv"))
+}
+}
+
+# Simulated power
+calculateAndPlotPowerSimulated<-function(aPathsFile, ePathsFile, codeName, nvar, alpha){
+
+aPaths<-read.csv(aPathsFile)
+aPaths$X<-NULL
+aPaths<-as.matrix(aPaths)
+ePaths<-read.csv(ePathsFile)
+ePaths$X<-NULL
+ePaths<-as.matrix(ePaths)
+
+MAF<-0.02
+Ns<-c(1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,15000,20000,25000,30000,35000,40000,45000,50000,55000, 60000)
+R2s<-c(0.01,0.0075,0.005,0.0025,0.001,0.00075,0.0005)
+
+for (R2 in R2s){
+write.csv(powerSimulatedMANOVA(R2 = R2, MAF = MAF, aPaths = aPaths, ePaths = ePaths, nvar = nvar, Ns = Ns, alpha = alpha), file = paste0("ACE_may2018/PowerAnalytic_multiv_" , codeName,"_", R2, "_Simulated.csv"))
+}
+}
+
+```
+
+
+# Run analyses
+
+```{r, message=FALSE}
+
+calculateAndPlotPower(aPathsFile = "ACE_dec2016/a_sign_meanLR_SubVols_ICVreg.csv", ePathsFile = "ACE_dec2016/e_sign_meanLR_SubVols_ICVreg.csv", codeName = "MeanLR_subcortVolumes_plotFucntion", nvarIndep = 6, nvar = 7, alpha=5e-8, method="weights")
+
+#calculateAndPlotPower(aPathsFile = "ACE_dec2016/a_sign_meanLR_hippoSF_ICVreg.csv", ePathsFile = "ACE_dec2016/e_sign_meanLR_hippoSF_ICVreg.csv", codeName = "MeanLR_hippoSubfield_plotFucntion", nvarIndep = 7, nvar = 12, alpha=5e-8, method="weights")
+
+# Simulation results
+#calculateAndPlotPowerSimulated(aPathsFile = "ACE_dec2016/a_sign_meanLR_SubVols_ICVreg.csv", ePathsFile = "ACE_dec2016/e_sign_meanLR_SubVols_ICVreg.csv", codeName = "MeanLR_subcortVolumes_plotFucntion", nvar = 7, alpha=5e-8)
+
+#calculateAndPlotPowerSimulated(aPathsFile = "ACE_dec2016/a_sign_meanLR_hippoSF_ICVreg.csv", ePathsFile = "ACE_dec2016/e_sign_meanLR_hippoSF_ICVreg.csv", codeName = "MeanLR_hippoSubfield_plotFucntion",  nvar = 12, alpha=5e-8)
+
+```
+
+# Example of plot
+
+## Plot subcortical volumes
+
+```{r, message=FALSE}
+
+# Plot
+pw1<-read.csv("ACE_may2018/PowerAnalytic_multiv_MeanLR_subcortVolumes_plotFucntion_0.01_weights.csv", header=T, row.names = 1)
+pw2<-read.csv("ACE_may2018/PowerAnalytic_multiv_MeanLR_subcortVolumes_plotFucntion_0.0075_weights.csv", header=T, row.names = 1)
+pw3<-read.csv("ACE_may2018/PowerAnalytic_multiv_MeanLR_subcortVolumes_plotFucntion_0.005_weights.csv", header=T, row.names = 1)
+pw4<-read.csv("ACE_may2018/PowerAnalytic_multiv_MeanLR_subcortVolumes_plotFucntion_0.0025_weights.csv", header=T, row.names = 1)
+pw5<-read.csv("ACE_may2018/PowerAnalytic_multiv_MeanLR_subcortVolumes_plotFucntion_0.001_weights.csv", header=T, row.names = 1)
+pw6<-read.csv("ACE_may2018/PowerAnalytic_multiv_MeanLR_subcortVolumes_plotFucntion_0.00075_weights.csv", header=T, row.names = 1)
+pw7<-read.csv("ACE_may2018/PowerAnalytic_multiv_MeanLR_subcortVolumes_plotFucntion_5e-04_weights.csv", header=T, row.names = 1)
+
+Ns<-c(1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,15000,20000,25000,30000,35000,40000,45000,50000,55000, 60000)
+R2s<-c(0.01,0.0075,0.005,0.0025,0.001,0.00075,0.0005)
+MAF=0.2
+nvar=7
+
+# PLOT
+#png("ACE_may2018/Power_UnivVSMultiv_analytic_MLR_subCortVol_ICVreg_conservative_weight.png",  width = 28, height = 15, units = "cm", res=400)
+par(xpd=F, mar=par()$mar+c(4,0,-3,0))
+plot(c(0,Ns)/1000, pw1[1,], pch=20, xlab="Sample size (in thousands)", ylab="Power", ylim=c(0,1))
+library(scales)
+NNs<-7
+
+colM<-hue_pal()(NNs)
+for (iii in 1:NNs){
+  points(c(0,Ns)/1000,get(paste("pw", iii, sep = ""))[2,], col=colM[iii], pch=20)
+  lines(c(0,Ns)/1000,get(paste("pw", iii, sep = ""))[2,], col=colM[iii], lwd=2)
+
+   points(c(0,Ns)/1000,calculateUnivPowerAnalytic(R2 = R2s[iii], MAF = MAF, alpha = 5e-8/6, Ns = Ns), col=colM[iii], pch=2)
+  lines(c(0,Ns)/1000,calculateUnivPowerAnalytic(R2 = R2s[iii], MAF = MAF, alpha = 5e-8/6, Ns = Ns), col=colM[iii], lty=2, lwd=2)
+
+     points(c(0,Ns)/1000,calculateUnivPowerAnalytic(R2 = R2s[iii], MAF = MAF, alpha = 5e-12, Ns = Ns), col=colM[iii], pch=8)
+  lines(c(0,Ns)/1000,calculateUnivPowerAnalytic(R2 = R2s[iii], MAF = MAF, alpha = 5e-12, Ns = Ns), col=colM[iii], lty=3, lwd=2)
+
+}
+grid()
+abline(h=0.8, lty=2, lwd=2)
+par(xpd=T)
+legend(x = -3000/1000, y = -0.3, legend = c("R2=1%","R2=0.75%", "R2=0.5%", "R2=0.25%", "R2=0.1%", "R2=0.075%", "R2=0.05%"), col=colM, pch=19, cex=1, horiz = T, box.col = "white")
+legend(x = -3000/1000, y = -0.4, legend = c("Multivariate","Univariate 5e-8/neff   ", "Univariate 5e-12"), col="black", lty=c(1,2,3), cex=1,pch=c(20, 2,8), horiz = T, box.col = "white")
+#dev.off()
+
+```
+
+# Sensitivity analysis
+
+```{r, message=FALSE}
+
+aPathsFile = "QTIM_results/sta_matrix_subcortical.csv"
+ePathsFile = "QTIM_results/ste_matrix_subcortical.csv"
+aPaths<-read.csv(aPathsFile)
+aPaths$X<-NULL
+aPaths<-as.matrix(aPaths)
+ePaths<-read.csv(ePathsFile)
+ePaths$X<-NULL
+ePaths<-as.matrix(ePaths)
+
+aPathsSE=read.csv("QTIM_results/sta_SE_matrix_subcortical.csv")
+aPathsSE$X<-NULL
+aPathsSE<-as.matrix(aPathsSE)
+
+ePathsSE=read.csv("QTIM_results/ste_SE_matrix_subcortical.csv")
+ePathsSE$X<-NULL
+ePathsSE<-as.matrix(ePathsSE)
+
+
+# Initiate plot 
+
+#tiff(filename = "SensitivityAnalysis_Weights_subcorticalVolumes.tiff",compression = "lzw+p", width = 28, height = 15, units = "cm", res=400)
+
+nvar=7
+Ns = c(1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,15000,20000,25000,30000,35000,40000,45000,50000,55000, 60000)
+pw0=estimatePowerMultivariateConservative(R2 = 0.01, MAF = 0.2, aPaths = aPaths, ePaths = ePaths, nvar = 7, Ns = Ns, alpha = 5e-8, method = "weights")
+
+# Initialise plot
+par(xpd=F, mar=par()$mar+c(3,0,-3,0))
+plot(c(0,Ns), pw0[1,], pch=20,  xlab="Sample size (in thousands)", ylab="Power", ylim=c(0,1))
+lines(c(0,Ns), pw0[1,])
+colM=hue_pal()(7)
+
+# Loop over all effect sizes
+for (iii in 1:7){
+
+# Vary aPaths 100 times and superimpose power curves
+for (iter in 1:10){
+
+# Draw random values in a uniform -1.96 - 1.96 
+rand=matrix( runif(n = nvar * nvar, min = -1.96, max = 1.96), nrow = nvar, ncol = nvar)
+rand[upper.tri(rand)]=0
+
+randE=matrix( runif(n = nvar * nvar, min = -1.96, max = 1.96), nrow = nvar, ncol = nvar)
+randE[upper.tri(randE)]=0
+
+aPathsS= aPaths + rand * aPathsSE
+ePathsS= ePaths + randE * ePathsSE
+
+pw1=estimatePowerMultivariateConservative(R2 = R2s[iii], MAF = 0.2, aPaths = aPathsS, ePaths = ePathsS, nvar = 7, Ns = c(1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,15000,20000,25000,30000,35000,40000,45000,50000,55000, 60000), alpha = 5e-8, method = "weights")
+lines(c(0,Ns), pw1[1,], col=colM[iii])
+}
+    pw01=estimatePowerMultivariateConservative(R2 = R2s[iii], MAF = 0.2, aPaths = aPaths, ePaths = ePaths, nvar = 7, Ns = Ns, alpha = 5e-8, method = "weights")
+ points(c(0,Ns), pw01[1,], pch=20, col="black")
+}
+
+abline(h=0.8, lty=2, lwd=2)
+grid()
+par(xpd=T)
+legend(x = -3000/1000, y = -0.3, legend = c("R2=1%","R2=0.75%", "R2=0.5%", "R2=0.25%", "R2=0.1%", "R2=0.075%", "R2=0.05%"), col=colM, pch=19, cex=1, horiz = T, box.col = "white")
+#dev.off()
+
+```
+
+<br><br>
