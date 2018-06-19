@@ -86,7 +86,7 @@ return(RR2)
 
 ```
 
-# MANOVA power calculation 
+## MANOVA power calculation 
 
 ```{r, message=FALSE}
 estimatePowerMultivariateConservative<-function(R2, MAF, aPaths, ePaths, nvar, Ns, alpha, method){
@@ -200,7 +200,7 @@ colnames(resultWA)<-c(0,Ns)
 ```
 
 
-# Simulate power 
+## Simulate power 
 
 ```{r, message=FALSE}
 
