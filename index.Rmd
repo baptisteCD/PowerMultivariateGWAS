@@ -305,7 +305,7 @@ write.csv(powerSimulatedMANOVA(R2 = R2, MAF = MAF, aPaths = aPaths, ePaths = ePa
 
 ```{r, message=FALSE}
 
-calculateAndPlotPower(aPathsFile = "ACE_dec2016/a_sign_meanLR_SubVols_ICVreg.csv", ePathsFile = "ACE_dec2016/e_sign_meanLR_SubVols_ICVreg.csv", codeName = "MeanLR_subcortVolumes_plotFucntion", nvarIndep = 6, nvar = 7, alpha=5e-8, method="weights")
+calculateAndPlotPower(aPathsFile = "QTIM_results/sta_matrix_subcortical.csv", ePathsFile = "QTIM_results/ste_matrix_subcortical.csv", codeName = "MeanLR_subcortVolumes_plotFucntion", nvarIndep = 6, nvar = 7, alpha=5e-8, method="weights")
 
 #calculateAndPlotPower(aPathsFile = "ACE_dec2016/a_sign_meanLR_hippoSF_ICVreg.csv", ePathsFile = "ACE_dec2016/e_sign_meanLR_hippoSF_ICVreg.csv", codeName = "MeanLR_hippoSubfield_plotFucntion", nvarIndep = 7, nvar = 12, alpha=5e-8, method="weights")
 
